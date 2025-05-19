@@ -23,12 +23,6 @@ public class CallDetectionManager implements ReactPackage {
         return modules;
     }
 
-    public List<Class<? extends JavaScriptModule>> createJSModules() {
-        return Arrays.<Class<? extends JavaScriptModule>>asList(
-                CallStateUpdateActionModule.class
-        );
-    }
-
     @Override
     public List<ViewManager> createViewManagers(
             ReactApplicationContext reactContext) {
