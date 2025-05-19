@@ -1,17 +1,21 @@
 package com.pritesh.calldetection;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.telephony.PhoneStateListener;
+import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.util.Log;
+
+import androidx.annotation.RequiresApi;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
-
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -22,7 +26,7 @@ public class CallDetectionManagerModule
 
     private boolean wasAppInOffHook = false;
     private boolean wasAppInRinging = false;
-    private ReactApplicationContext reactContext;
+    private final ReactApplicationContext reactContext;
     private TelephonyManager telephonyManager;
     private CallDetectionPhoneStateListener callDetectionPhoneStateListener;
     private Activity activity = null;
@@ -47,17 +51,54 @@ public class CallDetectionManagerModule
         telephonyManager = (TelephonyManager) this.reactContext.getSystemService(
                 Context.TELEPHONY_SERVICE);
         callDetectionPhoneStateListener = new CallDetectionPhoneStateListener(this);
-        telephonyManager.listen(callDetectionPhoneStateListener,
-                PhoneStateListener.LISTEN_CALL_STATE);
+
+        // Adapted from https://stackoverflow.com/a/71789261
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (reactContext.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                telephonyManager.registerTelephonyCallback(reactContext.getMainExecutor(), callStateListener);
+            }
+        } else {
+            telephonyManager.listen(callDetectionPhoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+        }
 
     }
 
+    @RequiresApi(api = android.os.Build.VERSION_CODES.S)
+    private static abstract class CallStateListener extends TelephonyCallback implements TelephonyCallback.CallStateListener {
+        @Override
+        abstract public void onCallStateChanged(int state);
+    }
+
+    private final boolean callStateListenerRegistered = false;
+
+    private final CallStateListener callStateListener = (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) ?
+            new CallStateListener() {
+                @Override
+                public void onCallStateChanged(int state) {
+                    // Handle call state change
+                    phoneCallStateUpdated(state, null);
+                }
+            }
+            : null;
+
     @ReactMethod
     public void stopListener() {
-        telephonyManager.listen(callDetectionPhoneStateListener,
-                PhoneStateListener.LISTEN_NONE);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+           if(telephonyManager != null) {
+                if(callStateListener != null) {
+                    telephonyManager.unregisterTelephonyCallback(callStateListener);
+                }
+            }
+        } else {
+            if(telephonyManager  != null) {
+                if(callDetectionPhoneStateListener != null){
+                    telephonyManager.listen(callDetectionPhoneStateListener,
+                            PhoneStateListener.LISTEN_NONE);
+                }
+            }
+            callDetectionPhoneStateListener = null;
+        }
         telephonyManager = null;
-        callDetectionPhoneStateListener = null;
     }
 
     /**
@@ -109,11 +150,11 @@ public class CallDetectionManagerModule
 
     }
 
-    private void sendEvent(String eventName, String phoneNumber) {
+    private void sendEvent(String phoneNumber) {
     if (reactContext.hasActiveCatalystInstance()) {
         reactContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-            .emit(eventName, phoneNumber);
+            .emit("PhoneCallStateUpdate", phoneNumber);
     }
 }
 
@@ -122,10 +163,10 @@ public class CallDetectionManagerModule
         switch (state) {
             //Hangup
             case TelephonyManager.CALL_STATE_IDLE:
-                if(wasAppInOffHook == true) { // if there was an ongoing call and the call state switches to idle, the call must have gotten disconnected
-                    sendEvent("PhoneCallStateUpdate", "Disconnected");
-                } else if(wasAppInRinging == true) { // if the phone was ringing but there was no actual ongoing call, it must have gotten missed
-                     sendEvent("PhoneCallStateUpdate", "Missed");
+                if(wasAppInOffHook) { // if there was an ongoing call and the call state switches to idle, the call must have gotten disconnected
+                    sendEvent("Disconnected");
+                } else if(wasAppInRinging) { // if the phone was ringing but there was no actual ongoing call, it must have gotten missed
+                     sendEvent("Missed");
                 }
 
                 //reset device state
@@ -136,13 +177,13 @@ public class CallDetectionManagerModule
             case TelephonyManager.CALL_STATE_OFFHOOK:
                 //Device call state: Off-hook. At least one call exists that is dialing, active, or on hold, and no calls are ringing or waiting.
                 wasAppInOffHook = true;
-                 sendEvent("PhoneCallStateUpdate", "Offhook");
+                 sendEvent("Offhook");
                 break;
             //Incoming
             case TelephonyManager.CALL_STATE_RINGING:
                 // Device call state: Ringing. A new call arrived and is ringing or waiting. In the latter case, another call is already active.
                 wasAppInRinging = true;
-                sendEvent("PhoneCallStateUpdate", "Incoming");
+                sendEvent("Incoming");
                 break;
         }
     }
